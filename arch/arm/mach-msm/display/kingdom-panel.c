@@ -462,9 +462,9 @@ static struct msm_mdp_platform_data mdp_pdata = {
 #ifdef CONFIG_MDP4_HW_VSYNC
 	.xres = 540,
 	.yres = 960,
-	.back_porch = 4,
-	.front_porch = 2,
-	.pulse_width = 4,
+	.back_porch = 5,
+	.front_porch = 4,
+	.pulse_width = 2,
 #endif
 };
 
