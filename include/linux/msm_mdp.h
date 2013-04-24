@@ -489,4 +489,10 @@ int msm_fb_writeback_unregister_buffer(struct fb_info *info,
 int msm_fb_writeback_terminate(struct fb_info *info);
 #endif
 
+int mdp_ppp_v4l2_overlay_set(struct fb_info *info, struct mdp_overlay *req);
+int mdp_ppp_v4l2_overlay_clear(void);
+int mdp_ppp_v4l2_overlay_play(struct fb_info *info,
+        unsigned long srcp0_addr, unsigned long srcp0_size,
+        unsigned long srcp1_addr, unsigned long srcp1_size);
+
 #endif /*_MSM_MDP_H_*/
