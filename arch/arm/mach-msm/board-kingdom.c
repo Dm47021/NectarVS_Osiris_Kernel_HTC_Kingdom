@@ -6237,6 +6237,7 @@ static void fix_sizes(void)
 #endif
 }
 
+#ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 static void __init size_pmem_device(struct android_pmem_platform_data *pdata, unsigned long start, unsigned long size)
 {
 	pdata->start = start;
@@ -6248,15 +6249,17 @@ static void __init size_pmem_device(struct android_pmem_platform_data *pdata, un
 		pr_info("%s: pmem %s requests %lu bytes dynamically.\r\n",
 			__func__, pdata->name, size);
 }
+#endif
 static void __init size_pmem_devices(void)
 {
 #ifdef CONFIG_ANDROID_PMEM
+#ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 	size_pmem_device(&android_pmem_adsp_pdata, MSM_PMEM_ADSP_BASE, pmem_adsp_size);
 	size_pmem_device(&android_pmem_adsp2_pdata, MSM_PMEM_ADSP2_BASE, pmem_adsp2_size);
 	size_pmem_device(&android_pmem_audio_pdata, 0, pmem_audio_size);
 	size_pmem_device(&android_pmem_pdata, MSM_PMEM_SF_BASE, pmem_sf_size);
 #endif
-
+#endif 
 }
 
 #ifdef CONFIG_ANDROID_PMEM
