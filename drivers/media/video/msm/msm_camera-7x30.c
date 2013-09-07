@@ -43,6 +43,7 @@
 #include <asm/cacheflush.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
+#include <linux/ion.h>
 
 #ifdef CONFIG_RAWCHIP
 #include "rawchip/rawchip.h"
@@ -66,6 +67,8 @@ static dev_t msm_devno;
 static LIST_HEAD(msm_sensors);
 struct  msm_control_device *g_v4l2_control_device;
 int g_v4l2_opencnt;
+
+struct ion_client *client_for_ion;
 
 #define __CONTAINS(r, v, l, field) ({				\
 	typeof(r) __r = r;					\
@@ -264,37 +267,53 @@ error:
 static int msm_pmem_table_add(struct hlist_head *ptype,
 	struct msm_pmem_info *info, spinlock_t *pmem_spinlock)
 {
-	struct file *file;
 	unsigned long paddr;
+#ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
+	struct file *file;
 	unsigned long kvstart;
+#endif
 	unsigned long len;
-	int rc;
+	int rc = -ENOMEM;
 	struct msm_pmem_region *region;
 	unsigned long flags = 0;
 
+	region = kmalloc(sizeof(struct msm_pmem_region), GFP_KERNEL);
+	if (!region)
+		goto out;
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+		region->handle = ion_import_fd(client_for_ion, info->fd);
+		if (IS_ERR_OR_NULL(region->handle))
+			goto out1;
+		ion_phys(client_for_ion, region->handle,
+			&paddr, (size_t *)&len);
+#else
 	rc = get_pmem_file(info->fd, &paddr, &kvstart, &len, &file);
 	if (rc < 0) {
 		pr_err("[CAM]%s: get_pmem_file fd %d error %d\n",
 			__func__,
 			info->fd, rc);
-		return rc;
+		goto out1;
 	}
-
+	region->file = file;
+#endif
 	if (!info->len)
 		info->len = len;
 
 	rc = check_pmem_info(info, len);
 	if (rc < 0)
-		return rc;
+		goto out2;
 
 	paddr += info->offset;
+#ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 	kvstart += info->offset;
+#endif
 	len = info->len;
 
 	spin_lock_irqsave(pmem_spinlock, flags);
 	if (check_overlap(ptype, paddr, len) < 0) {
 		spin_unlock_irqrestore(pmem_spinlock, flags);
-		return -EINVAL;
+		rc = -EINVAL;
+		goto out2;
 	}
 	spin_unlock_irqrestore(pmem_spinlock, flags);
 
@@ -302,17 +321,14 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 		__func__,
 		info->type, paddr, (unsigned long)info->vaddr);
 
-	region = kzalloc(sizeof(struct msm_pmem_region), GFP_KERNEL);
-	if (!region)
-		return -ENOMEM;
-
 	spin_lock_irqsave(pmem_spinlock, flags);
 	INIT_HLIST_NODE(&region->list);
 
 	region->paddr = paddr;
+#ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 	region->kvaddr = kvstart;
+#endif
 	region->len = len;
-	region->file = file;
 	memcpy(&region->info, info, sizeof(region->info));
 
 	hlist_add_head(&(region->list), ptype);
@@ -321,6 +337,16 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 		__func__, info->type, paddr, (unsigned long)info->vaddr);
 
 	return 0;
+out2:
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+	ion_free(client_for_ion, region->handle);
+#else
+	put_pmem_file(region->file);
+#endif
+out1:
+	kfree(region);
+out:
+	return rc;
 }
 
 /* return of 0 means failure */
@@ -534,7 +560,11 @@ static int __msm_pmem_table_del(struct msm_sync *sync,
 					pinfo->vaddr == region->info.vaddr &&
 					pinfo->fd == region->info.fd) {
 				hlist_del(node);
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+				ion_free(client_for_ion, region->handle);
+#else
 				put_pmem_file(region->file);
+#endif
 				kfree(region);
 			}
 			else
@@ -557,7 +587,11 @@ static int __msm_pmem_table_del(struct msm_sync *sync,
 				pinfo->vaddr == region->info.vaddr &&
 				pinfo->fd == region->info.fd) {
 				hlist_del(node);
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+				ion_free(client_for_ion, region->handle);
+#else
 				put_pmem_file(region->file);
+#endif
 				kfree(region);
 				CDBG("[CAM] %s: type %d, vaddr	0x%p\n",
 					__func__, pinfo->type, pinfo->vaddr);
@@ -581,7 +615,11 @@ static int __msm_pmem_table_del(struct msm_sync *sync,
 					pinfo->vaddr == region->info.vaddr &&
 					pinfo->fd == region->info.fd) {
 				hlist_del(node);
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+				ion_free(client_for_ion, region->handle);
+#else
 				put_pmem_file(region->file);
+#endif
 				kfree(region);
 			}
 			else
@@ -2351,14 +2389,9 @@ int msm_camera_flash(struct msm_sync *sync, int level)
 #ifdef CONFIG_FLASH_BACKLIGHT_OFF
 		{
 		int rc = sync->sdata->flash_cfg->camera_flash(flash_level);
-//HTC_START_Simon.Ti_Liu_20120322 - Backlight off sleep 400ms by request of IA Power Joy Yen.
-		if (high_enabled == 1) {
-			pr_info("[CAM] sleep 400ms for turn off backlight: E\n");
-			msleep(400);
-			pr_info("[CAM] sleep 400ms for turn off backlight: X\n");
+		if (high_enabled == 1)
 			led_brightness_switch("lcd-backlight", LED_FULL);
-		}
-//HTC_END
+
 		high_enabled = 0;
 
 		return rc;
@@ -2385,12 +2418,6 @@ int msm_camera_flash(struct msm_sync *sync, int level)
 		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL6.(%d) \n", __func__, level);
 	case FL_MODE_FLASH_LEVEL7:
 		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL7.(%d) \n", __func__, level);
-//HTC_START_Simon.Ti_Liu_20120322 - Backlight off sleep 400ms by request of IA Power Joy Yen.
-#ifdef CONFIG_FLASH_BACKLIGHT_OFF
-		high_enabled = 1;
-                led_brightness_switch("lcd-backlight", LED_OFF);
-#endif
-//HTC_END - Backlight off sleep 400ms by request of IA Power Joy Yen.
 		flash_level = level;
 		pr_info("[CAM]%s: flash_level = %d", __func__, flash_level);
 		break;
@@ -2638,6 +2665,8 @@ static long msm_ioctl_control(struct file *filep, unsigned int cmd,
 		break;
 	}
 
+	if (rc) pr_err("[CAM]%s: rc = %d\n", __func__, rc);
+
 	return rc;
 }
 
@@ -2684,14 +2713,22 @@ static int __msm_release(struct msm_sync *sync)
 		hlist_for_each_entry_safe(region, hnode, n,
 				&sync->pmem_frames, list) {
 			hlist_del(hnode);
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+			ion_free(client_for_ion, region->handle);
+#else
 			put_pmem_file(region->file);
+#endif
 			kfree(region);
 		}
 		pr_info("[CAM] %s, free stats pmem region\n", __func__);
 		hlist_for_each_entry_safe(region, hnode, n,
 				&sync->pmem_stats, list) {
 			hlist_del(hnode);
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+			ion_free(client_for_ion, region->handle);
+#else
 			put_pmem_file(region->file);
+#endif
 			kfree(region);
 		}
 		msm_queue_drain(&sync->pict_q, list_pict);
@@ -2704,6 +2741,7 @@ static int __msm_release(struct msm_sync *sync)
 		pr_info("[CAM] %s: completed\n", __func__);
 	}
 	mutex_unlock(&sync->lock);
+	ion_client_destroy(client_for_ion);
 
 	return 0;
 }
@@ -3248,6 +3286,7 @@ static int __msm_open(struct msm_sync *sync, const char *const apps_id)
 		}
 	}
 	sync->opencnt++;
+	client_for_ion = msm_ion_client_create(-1, "camera");
 
 msm_open_done:
 	mutex_unlock(&sync->lock);
